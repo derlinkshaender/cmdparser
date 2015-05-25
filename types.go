@@ -7,7 +7,7 @@ import (
 
 const (
 	Sequence = iota
-	Choice   = iota
+	Choice
 )
 
 type GrammarItemType int
@@ -118,6 +118,16 @@ func (item RuleItem) String() string {
 		s += "IdentifierExpr"
 	}
 	s += " Expression: [" + item.ExprString + "]"
+	switch item.Cardinality {
+	case CardinalityOne:
+		s += " ONE"
+	case CardinalityOneOrMore:
+		s += " ONE OR MORE"
+	case CardinalityZeroOrOne:
+		s += "ZERO OR ONE"
+	case CardinalityZeroOrMore:
+		s += "ZERO OR MORE"
+	}
 	return s
 }
 

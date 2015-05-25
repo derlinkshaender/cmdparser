@@ -41,7 +41,7 @@ func (theParser *CommandParser) SetInputString(inputLine string) {
 	theParser.TokenizeCommandLine()
 }
 
-func (theParser *CommandParser) GolangTokenizer(line string) []*PreToken {
+func (theParser *CommandParser) golangTokenizer(line string) []*PreToken {
 	var theScanner scanner.Scanner
 	var result []*PreToken = []*PreToken{}
 	theScanner.Init(strings.NewReader(line))
@@ -61,7 +61,7 @@ func (theParser *CommandParser) GolangTokenizer(line string) []*PreToken {
 }
 
 func (theParser *CommandParser) TokenizeCommandLine() {
-	var preTokens []*PreToken = theParser.GolangTokenizer(theParser.inputLine)
+	var preTokens []*PreToken = theParser.golangTokenizer(theParser.inputLine)
 	var postTokens []*CmdToken = []*CmdToken{}
 	var haveError bool = false
 	index := 0
@@ -173,6 +173,7 @@ func (theParser *CommandParser) dump() {
 	}
 }
 
+// copy a token struct
 func copyToken(tok *CmdToken) *CmdToken {
 	var result CmdToken = *tok
 	return &result
@@ -199,7 +200,9 @@ func (theParser *CommandParser) read() *CmdToken {
 
 // un-read a token back into the token list
 func (theParser *CommandParser) unread(tok *CmdToken) {
-	theParser.tokenList = append([]*CmdToken{tok}, theParser.tokenList...)
+	if tok != nil {
+		theParser.tokenList = append([]*CmdToken{tok}, theParser.tokenList...)
+	}
 }
 
 func (theParser *CommandParser) splitRule(ruleString string) ([]string, GrammarItemType) {
@@ -257,26 +260,24 @@ func (theParser *CommandParser) expressionCardinality(expr string) GrammarItemCa
 
 func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct {
 	items := []*RuleItem{}
-	list, typ := theParser.splitRule(expression)
+	ruleItems, ruleType := theParser.splitRule(expression)
 	rs := &RuleStruct{
 		Name:  name,
 		Items: items,
-		Type:  typ,
+		Type:  ruleType,
 	}
-	for _, li := range list {
+	for _, ruleItem := range ruleItems {
 		item := &RuleItem{
-			Cardinality: theParser.expressionCardinality(li),
-			ExprType:    theParser.expressionType(li),
-			ExprString:  li,
+			Cardinality: theParser.expressionCardinality(ruleItem),
+			ExprType:    theParser.expressionType(ruleItem),
+			ExprString:  ruleItem,
 			ParentRule:  rs,
 			Seen:        false,
 		}
-
 		if item.Cardinality != CardinalityOne {
 			// strip out cardinality char
 			item.ExprString = item.ExprString[0 : len(item.ExprString)-1]
 		}
-
 		switch item.ExprType {
 		case IdentifierExpr, CharExpr:
 			// remove quotes
@@ -285,7 +286,7 @@ func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct
 			// remove exclamation mark
 			item.ExprString = item.ExprString[1:]
 		}
-
+		// TODO: find a better way to extract runes from a string
 		if item.ExprType == CharExpr {
 			s := utf8string.NewString(item.ExprString)
 			r := s.At(1)
@@ -295,7 +296,6 @@ func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct
 				panic("CharExpr does not contain rune literal!")
 			}
 		}
-
 		rs.Items = append(rs.Items, item)
 	}
 	return rs
@@ -339,10 +339,6 @@ func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *Cmd
 	var isMatch bool = false
 	ruleItemPtr.Seen = true
 
-	if tokptr == nil {
-		return false
-	}
-
 	if theParser.options&OptionDebug != 0 {
 		fmt.Println("ruleItem:", ruleItemPtr.String())
 		if tokptr != nil {
@@ -351,6 +347,11 @@ func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *Cmd
 			fmt.Println("tokenPtr is NIL!")
 		}
 	}
+
+	if tokptr == nil {
+		return false
+	}
+
 	switch ruleItemPtr.ExprType {
 	case CharExpr:
 		isMatch = tokptr.Type == TokenChar && ruleItemPtr.ExprString == tokptr.Text
@@ -514,11 +515,11 @@ func (theParser *CommandParser) Parse() bool {
 	match := theParser.matchRule(rule)
 	if !theParser.AtEnd() {
 		// if there still is stuff to parse, it's not a match ...
+		match = false
 		if theParser.options&OptionDebug != 0 {
 			fmt.Println("Not at end => no match")
-			fmt.Println(theParser.tokenList)
+			fmt.Println("Token list =>", theParser.tokenList)
 		}
-		match = false
 	}
 	theParser.buildParseResults()
 	theParser.IsMatch = match
