@@ -2,10 +2,12 @@ package cmdparser
 
 import (
 	"fmt"
+	"golang.org/x/exp/utf8string"
 	"regexp"
 	"strconv"
 	"strings"
 	"text/scanner"
+	"unicode/utf8"
 )
 
 func NewParser() *CommandParser {
@@ -26,22 +28,27 @@ func (theParser *CommandParser) SetCommandGrammar(cg map[string]string) {
 		theParser.grammar[k] = v
 		theParser.rules[k] = theParser.prepareRule(k, v)
 	}
+	if theParser.options&OptionDebug != 0 {
+		for i, v := range theParser.rules["START"].Items {
+			fmt.Println(i, ":", v)
+		}
+	}
 }
 
 func (theParser *CommandParser) SetInputString(inputLine string) {
 	theParser.inputLine = inputLine
-	theParser.TokenizeCommandLine(inputLine)
+	theParser.TokenizeCommandLine()
 }
 
-func (theParser *CommandParser) TokenizeCommandLine(line string) {
+func (theParser *CommandParser) GolangTokenizer(line string) []*PreToken {
 	var theScanner scanner.Scanner
-	var result []*CmdToken = []*CmdToken{}
+	var result []*PreToken = []*PreToken{}
 	theScanner.Init(strings.NewReader(line))
 	theScanner.Mode = scanner.ScanFloats | scanner.ScanIdents | scanner.ScanInts | scanner.ScanStrings
 	tok := theScanner.Scan()
 	for tok != scanner.EOF && tok != COMMENTCHAR {
 		s := theScanner.TokenText()
-		theToken := &CmdToken{
+		theToken := &PreToken{
 			Type:     tok,
 			Text:     s,
 			Position: theScanner.Position,
@@ -49,13 +56,151 @@ func (theParser *CommandParser) TokenizeCommandLine(line string) {
 		result = append(result, theToken)
 		tok = theScanner.Scan()
 	}
-	theParser.tokenList = result
+	return result
 }
 
-func (theParser *CommandParser) splitRule(ruleString string) ([]string, int) {
+func (theParser *CommandParser) TokenizeCommandLine() {
+	var preTokens []*PreToken = theParser.GolangTokenizer(theParser.inputLine)
+	var postTokens []*CmdToken = []*CmdToken{}
+	var haveError bool = false
+	index := 0
+	for {
+		tok := preTokens[index]
+		postTok := &CmdToken{}
+		postTok.Position = tok.Position
+		switch tok.Type {
+		case scanner.Ident:
+			low := strings.ToLower(tok.Text)
+			// process booleans
+			if low == "true" || low == "yes" || low == "false" || low == "no" {
+				postTok.Text = low
+				postTok.Type = TokenBool
+				postTok.Value = (low == "yes" || low == "true")
+			} else {
+				postTok.Text = tok.Text
+				postTok.Type = TokenIdent
+				postTok.Value = tok.Text
+			}
+			postTokens = append(postTokens, postTok)
+		case scanner.Int:
+			postTok.Text = tok.Text
+			postTok.Type = TokenInt
+			val, err := strconv.Atoi(tok.Text)
+			if err == nil {
+				postTok.Value = val
+			} else {
+				postTok.Value = nil
+				postTok.Type = TokenERR
+				haveError = true
+			}
+			postTokens = append(postTokens, postTok)
+		case scanner.Float:
+			postTok.Text = tok.Text
+			postTok.Type = TokenFloat
+			val, err := strconv.ParseFloat(tok.Text, 64)
+			if err == nil {
+				postTok.Value = val
+			} else {
+				postTok.Value = nil
+				postTok.Type = TokenERR
+				haveError = true
+			}
+			postTokens = append(postTokens, postTok)
+		case '\'':
+			if tok.Text == "'" {
+				tmpStr := ""
+				startIndex := index
+				for {
+					index++
+					if index >= len(preTokens) || preTokens[index].Type == '\'' {
+						break
+					}
+					tok = preTokens[index]
+					tmpStr += tok.Text
+				}
+				postTok.Text = tmpStr
+				postTok.Type = TokenExpr
+				postTok.Value = preTokens[startIndex:index]
+			} else {
+				postTok.Value = nil
+				postTok.Type = TokenERR
+				haveError = true
+			}
+			postTokens = append(postTokens, postTok)
+		case scanner.String:
+			postTok.Text = preTokens[index].Text
+			postTok.Type = TokenString
+			val, err := strconv.Unquote(preTokens[index].Text)
+			if err == nil {
+				postTok.Value = val
+			} else {
+				postTok.Value = nil
+				postTok.Type = TokenERR
+				haveError = true
+			}
+			postTokens = append(postTokens, postTok)
+		default:
+			postTok.Type = TokenChar
+			postTok.Text = preTokens[index].Text
+			r, _ := utf8.DecodeRuneInString(preTokens[index].Text)
+			postTok.Value = r
+			postTokens = append(postTokens, postTok)
+		}
+		if haveError {
+			postTokens = nil
+			theParser.TokenizerError = true
+		} else {
+			theParser.TokenizerError = false
+		}
+		index++
+		if index >= len(preTokens) {
+			break
+		}
+	}
+	theParser.tokenList = postTokens
+}
+
+func (theParser *CommandParser) dump() {
+	for i, v := range theParser.tokenList {
+		fmt.Printf("%2d: ", i)
+		fmt.Print(v.Type, "> ")
+		fmt.Println(v.String())
+	}
+}
+
+func copyToken(tok *CmdToken) *CmdToken {
+	var result CmdToken = *tok
+	return &result
+}
+
+// peek a token without advancing the input token list
+func (theParser *CommandParser) peek() *CmdToken {
+	var result *CmdToken = nil
+	if len(theParser.tokenList) > 0 {
+		result = copyToken(theParser.tokenList[0])
+	}
+	return result
+}
+
+// consume a token from the input token list
+func (theParser *CommandParser) read() *CmdToken {
+	var result *CmdToken = nil
+	if len(theParser.tokenList) > 0 {
+		result = theParser.tokenList[0]
+		theParser.tokenList = append([]*CmdToken{}, theParser.tokenList[1:]...)
+	}
+	return result
+}
+
+// un-read a token back into the token list
+func (theParser *CommandParser) unread(tok *CmdToken) {
+	theParser.tokenList = append([]*CmdToken{tok}, theParser.tokenList...)
+}
+
+func (theParser *CommandParser) splitRule(ruleString string) ([]string, GrammarItemType) {
 	var temp []string
 	var result []string = []string{}
-	var resultType int
+	var resultType GrammarItemType
 
 	if strings.Index(ruleString, CHOICESTRING) > 0 {
 		resultType = Choice
@@ -73,11 +218,11 @@ func (theParser *CommandParser) splitRule(ruleString string) ([]string, int) {
 	return result, resultType
 }
 
-func (theParser *CommandParser) expressionType(expr string) int {
-	var result int
+func (theParser *CommandParser) expressionType(expr string) GrammarItemType {
+	var result GrammarItemType
 	switch expr[0] {
 	case '"':
-		result = StringExpr
+		result = IdentifierExpr
 	case '\'':
 		result = CharExpr
 	case '[':
@@ -90,8 +235,8 @@ func (theParser *CommandParser) expressionType(expr string) int {
 	return result
 }
 
-func (theParser *CommandParser) expressionCardinality(expr string) int {
-	var result int
+func (theParser *CommandParser) expressionCardinality(expr string) GrammarItemCardinality {
+	var result GrammarItemCardinality
 	switch expr[len(expr)-1] {
 	case '*':
 		result = CardinalityZeroOrMore
@@ -106,18 +251,38 @@ func (theParser *CommandParser) expressionCardinality(expr string) int {
 }
 
 func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct {
-	items := []RuleItem{}
+	items := []*RuleItem{}
 	list, typ := theParser.splitRule(expression)
 	for _, li := range list {
-		item := RuleItem{
+		item := &RuleItem{
 			Cardinality: theParser.expressionCardinality(li),
 			ExprType:    theParser.expressionType(li),
 			ExprString:  li,
 			ParseValue:  "",
 			ParseType:   scanner.EOF,
 		}
+
 		if item.Cardinality != CardinalityOne {
-			item.ExprString = item.ExprString[:len(item.ExprString)-1]
+			// strip out cardinality char
+			item.ExprString = item.ExprString[0 : len(item.ExprString)-1]
+		}
+
+		switch item.ExprType {
+		case IdentifierExpr, CharExpr:
+			item.ExprString = item.ExprString[1 : len(item.ExprString)-1]
+		case DataTypeExpr:
+			item.ExprString = item.ExprString[1:]
+		}
+
+		switch item.ExprType {
+		case CharExpr:
+			s := utf8string.NewString(item.ExprString)
+			r := s.At(1)
+			if r == '\'' {
+				item.ExprString = s.String()
+			} else {
+				panic("CharExpr does not contain rune literal!")
+			}
 		}
 
 		items = append(items, item)
@@ -130,97 +295,150 @@ func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct
 	return rs
 }
 
-func (theParser *CommandParser) matchItem(ruleItem *RuleItem) bool {
-	var itemMatch bool
-	var err error
-	if theParser.options&OptionDebug != 0 {
-		fmt.Print("  Trying item ", ruleItem.ExprString, " ")
-		switch ruleItem.Cardinality {
-		case CardinalityOne:
-			fmt.Println("Exactly ONE")
-		case CardinalityOneOrMore:
-			fmt.Println("ONE or more")
-		case CardinalityZeroOrMore:
-			fmt.Println("ZERO or more")
-		case CardinalityZeroOrOne:
-			fmt.Println("ZERO or ONE")
-		}
-		if theParser.currIndex < len(theParser.tokenList) {
-			fmt.Println("  Token: ", theParser.currIndex, CHOICESTRING, len(theParser.tokenList)-1, ":", theParser.tokenList[theParser.currIndex])
-		} else {
-			fmt.Println("  Token unavailable, parsed beyond end.")
-		}
-	}
-	ruleItem.Seen = true
-	if ruleItem.ExprType == SymbolExpr {
-		if theParser.currIndex < len(theParser.tokenList) {
-			s := ruleItem.ExprString
-			itemMatch, theParser.currIndex = theParser.matchRule(theParser.rules[s])
-		} else {
-			if ruleItem.Cardinality == CardinalityZeroOrMore || ruleItem.Cardinality == CardinalityZeroOrOne {
-				itemMatch = true
-			}
-		}
+func matchClassExpr(theClass string, tokptr *CmdToken) bool {
+	itemMatch, err := regexp.MatchString(theClass, tokptr.Text)
+	if err != nil {
+		itemMatch = false
 	} else {
-		if theParser.currIndex < len(theParser.tokenList) {
-			switch ruleItem.ExprType {
-			case StringExpr:
-				unq, err := strconv.Unquote(ruleItem.ExprString)
-				if err != nil {
-					return false
-				}
-				itemMatch = theParser.tokenList[theParser.currIndex].Text == unq
-			case CharExpr:
-				itemMatch = theParser.tokenList[theParser.currIndex].Text == ruleItem.ExprString
-			case ClassExpr:
-				itemMatch, err = regexp.MatchString(ruleItem.ExprString, theParser.tokenList[theParser.currIndex].Text)
-				if err != nil {
-					itemMatch = false
-				}
-			case DataTypeExpr:
-				dataType := strings.ToLower(ruleItem.ExprString[1:])
-				switch dataType {
-				case "string":
-					itemMatch = theParser.tokenList[theParser.currIndex].Type == scanner.String
-				case "int":
-					itemMatch = theParser.tokenList[theParser.currIndex].Type == scanner.Int
-				case "float":
-					itemMatch = theParser.tokenList[theParser.currIndex].Type == scanner.Float
-				case "bool":
-					s := strings.ToLower(theParser.tokenList[theParser.currIndex].Text)
-					itemMatch = theParser.tokenList[theParser.currIndex].Type == scanner.String &&
-						(s == "on" || s == "off" || s == "true" || s == "false")
-				}
-			}
-			if itemMatch {
-				ruleItem.ParseValue = theParser.tokenList[theParser.currIndex].Text
-				ruleItem.ParseType = theParser.tokenList[theParser.currIndex].Type
-				theParser.currIndex++
-			}
-		} else {
-			itemMatch = false
-		}
+		itemMatch = tokptr.Type == TokenString
 	}
-	if !itemMatch && (ruleItem.Cardinality == CardinalityZeroOrMore || ruleItem.Cardinality == CardinalityZeroOrOne) {
-		itemMatch = true
-	}
-	if theParser.options&OptionDebug != 0 {
-		fmt.Println("  >", itemMatch, theParser.currIndex)
-	}
-	theParser.tokenIndex = theParser.currIndex
 	return itemMatch
 }
 
-func (theParser *CommandParser) matchRule(rule *RuleStruct) (bool, int) {
+func matchDataTypeExpr(theDataType TokenType, tokptr *CmdToken) bool {
+	return tokptr.Type == theDataType
+}
+
+func matchEvaluatorExpr(theExpression string, tokptr *CmdToken) bool {
+	return tokptr.Type == TokenExpr
+}
+
+func getCardinality(ruleItemPtr *RuleItem) (minxOccur, maxOccur int) {
+	min := 0
+	max := 0
+	switch ruleItemPtr.Cardinality {
+	case CardinalityOne:
+		min = 1
+		max = 1
+	case CardinalityOneOrMore:
+		min = 1
+		max = 1 << 32
+	case CardinalityZeroOrOne:
+		min = 0
+		max = 1
+	case CardinalityZeroOrMore:
+		min = 0
+		max = 1 << 32
+	}
+	return min, max
+}
+
+func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *CmdToken) bool {
+	var result bool = false
+	if theParser.options&OptionDebug != 0 {
+		fmt.Println("ruleItem:", ruleItemPtr.String())
+		if tokptr != nil {
+			fmt.Println("tokenPtr:", tokptr.String())
+		} else {
+			fmt.Println("tokenPtr is NIL!")
+		}
+	}
+	switch ruleItemPtr.ExprType {
+	case CharExpr:
+		result = tokptr.Type == TokenChar && ruleItemPtr.ExprString == tokptr.Text
+	case IdentifierExpr:
+		result = tokptr.Type == TokenIdent && ruleItemPtr.ExprString == tokptr.Value
+	case ClassExpr:
+		result = matchClassExpr(ruleItemPtr.ExprString, tokptr)
+	case SymbolExpr:
+		theParser.unread(tokptr)
+		result = theParser.matchRule(theParser.rules[ruleItemPtr.ExprString])
+	case DataTypeExpr:
+		dtStr := strings.ToLower(ruleItemPtr.ExprString)
+		var reqType TokenType
+		switch dtStr {
+		case "string":
+			reqType = TokenString
+		case "int":
+			reqType = TokenInt
+		case "bool":
+			reqType = TokenBool
+		case "float":
+			reqType = TokenFloat
+		case "char":
+			reqType = TokenChar
+		}
+		result = matchDataTypeExpr(reqType, tokptr)
+	case EvaluatorExpr:
+		result = tokptr.Type == TokenExpr
+	}
+
+	return result
+}
+
+func (theParser *CommandParser) matchItemWithToken(ruleItemPtr *RuleItem) bool {
+	var result bool = false
+	var matchCount int = 0
+	minOccur, maxOccur := getCardinality(ruleItemPtr)
+
+	for {
+		match := theParser.matchRuleItem(ruleItemPtr, theParser.tokptr)
+
+		// no annotation means ONE
+		if minOccur == 1 && maxOccur == 1 {
+			result = match
+			break
+		}
+		if match {
+			matchCount++
+			result = match
+			// match a matching Expr+ or a Expr*
+			if maxOccur >= 1<<32 || (minOccur == 0 && maxOccur == 1) {
+				theParser.tokptr = theParser.read()
+				// break out, if token is nil => matching read until end of input
+				if theParser.tokptr == nil {
+					result = match
+					break
+				}
+			}
+			// too many matches?
+			if maxOccur == 1 && matchCount > 1 {
+				result = false
+				break
+			}
+		} else {
+			// match a Expr?
+			if minOccur == 0 || matchCount >= minOccur {
+				result = true
+				theParser.unread(theParser.tokptr)
+				break
+			}
+			if matchCount < minOccur {
+				result = false
+				break
+			}
+		}
+	}
+	return result
+}
+
+func (theParser *CommandParser) matchRule(rule *RuleStruct) bool {
 	if theParser.options&OptionDebug != 0 {
 		fmt.Println("Trying to match ", rule.Name)
 	}
-	var match bool
-	//var newIndex int = theParser.tokenIndex
+	var match bool = false
+
 	if rule.Type == Sequence {
 		// all must match
-		for i, _ := range rule.Items {
-			match = theParser.matchItem(&rule.Items[i])
+		for _, item := range rule.Items {
+			theParser.tokptr = theParser.read()
+			if theParser.options&OptionDebug != 0 {
+				fmt.Println("Using Sequence Item:", item.String())
+			}
+			match = theParser.matchItemWithToken(item)
+			if theParser.options&OptionDebug != 0 {
+				fmt.Println("      Result:", match)
+			}
 			if !match {
 				break
 			}
@@ -228,42 +446,52 @@ func (theParser *CommandParser) matchRule(rule *RuleStruct) (bool, int) {
 	} else if rule.Type == Choice {
 		// check if any of them matched
 		match = false
-		for i, _ := range rule.Items {
-			im := theParser.matchItem(&rule.Items[i])
+		theParser.tokptr = theParser.read()
+		for _, item := range rule.Items {
+			if theParser.options&OptionDebug != 0 {
+				fmt.Println("Using Choice Item:", item.String())
+			}
+			im := theParser.matchItemWithToken(item)
+			if theParser.options&OptionDebug != 0 {
+				fmt.Println("      Result:", im)
+			}
 			if im {
 				match = true
-				//newIndex = theParser.currIndex
+				break
 			}
-		}
-		if !match { // parse error
-			return false, len(theParser.tokenList)
 		}
 	} else {
 		fmt.Println("You should not be here ...")
 		panic(fmt.Errorf("Invalid rule type %v", rule.Type))
 	}
+
 	theParser.rules[rule.Name].seen = true
 	if theParser.options&OptionDebug != 0 {
-		fmt.Println("Done rule ", rule.Name, "  (match=", match, "  newIndex=", theParser.tokenIndex, ")")
+		fmt.Println("Done rule ", rule.Name, "  match=", match)
 	}
-	return match, theParser.tokenIndex // newIndex
+	return match
+}
+
+func (theParser *CommandParser) AtEnd() bool {
+	return len(theParser.tokenList) == 0
 }
 
 func (theParser *CommandParser) Parse() bool {
-	theParser.tokenIndex = 0
-	match := false
 	rule := theParser.rules["START"]
-	match, theParser.tokenIndex = theParser.matchRule(rule)
-	atEnd := theParser.tokenIndex == len(theParser.tokenList)
-	if !atEnd {
+	match := theParser.matchRule(rule)
+	if !theParser.AtEnd() {
 		// if there still is stuff to parse, it's not a match ...
+		if theParser.options&OptionDebug != 0 {
+			fmt.Println("Not at end => no match")
+			fmt.Println(theParser.tokenList)
+		}
 		match = false
 	}
 	theParser.IsMatch = match
 	return match
 }
 
-func (theParser *CommandParser) Dump() {
+func (theParser *CommandParser) DumpRules() {
 	for _, rule := range theParser.rules {
 		fmt.Println(rule.Name)
 		for i, ri := range rule.Items {
