@@ -18,7 +18,6 @@ const (
 	ClassExpr
 	SymbolExpr
 	DataTypeExpr
-	EvaluatorExpr
 )
 
 type GrammarItemCardinality int
@@ -65,6 +64,11 @@ type CmdToken struct {
 	Position scanner.Position
 }
 
+type ParseError struct {
+	Column  int
+	Message string
+}
+
 func (tok CmdToken) String() string {
 	s := ""
 	switch tok.Type {
@@ -75,7 +79,7 @@ func (tok CmdToken) String() string {
 	case TokenERR:
 		s += "ERR "
 	case TokenExpr:
-		s += "Expr "
+		s += "Expression "
 	case TokenFloat:
 		s += "Float "
 	case TokenIdent:
@@ -91,11 +95,11 @@ func (tok CmdToken) String() string {
 }
 
 type RuleItem struct {
+	ParentRule  *RuleStruct
 	Cardinality GrammarItemCardinality
 	ExprType    GrammarItemType
 	ExprString  string
-	ParseValue  string
-	ParseType   TokenType
+	TokenPtr    *CmdToken
 	Seen        bool
 }
 
@@ -106,8 +110,6 @@ func (item RuleItem) String() string {
 		s += "CharExpr"
 	case ClassExpr:
 		s += "ClassExpr"
-	case EvaluatorExpr:
-		s += "EvaluatorExpr"
 	case SymbolExpr:
 		s += "SymbolExpr"
 	case DataTypeExpr:
@@ -133,6 +135,8 @@ type CommandParser struct {
 	options        uint64
 	inputLine      string
 	tokenList      []*CmdToken
+	errorList      []*ParseError
 	rules          map[string]*RuleStruct
 	grammar        map[string]string
+	ParseResult    map[string]CmdToken
 }

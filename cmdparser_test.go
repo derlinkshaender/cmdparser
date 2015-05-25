@@ -1,7 +1,6 @@
 package cmdparser
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -11,12 +10,9 @@ func Assert(t *testing.T, expr bool, msg string) {
 	}
 }
 
-func DontTestTokenizer(t *testing.T) {
-	fmt.Println("== Tokenizer Test")
-
+func TestTokenizer(t *testing.T) {
 	p := NewParser()
 	p.SetInputString(`SET "key" = 4.56 FOR ' var * 3 < 15' `)
-
 	Assert(t, len(p.tokenList) == 6, "Expected 6 tokens!")
 }
 
@@ -28,8 +24,7 @@ type grammarTestStruct struct {
 
 type grammarTest []grammarTestStruct
 
-func DontTestGrammarRules(t *testing.T) {
-	fmt.Println("== Grammar Rule Test")
+func TestGrammarRules(t *testing.T) {
 	data := grammarTest{
 		grammarTestStruct{Rule: `"show"+`, Input: "show show show ", Match: true},
 		grammarTestStruct{Rule: `"show"+`, Input: "show show blar ", Match: false},
@@ -56,9 +51,7 @@ func DontTestGrammarRules(t *testing.T) {
 		}
 		p.SetCommandGrammar(Grammar)
 		p.SetInputString(entry.Input)
-		fmt.Println("==> Parsing rule '"+entry.Rule+"' for ["+entry.Input+"] Expected:", entry.Match)
 		match := p.Parse()
-		fmt.Println("    Got:", match)
 		if match != entry.Match {
 			t.Error("Entry for rule " + entry.Rule + " failed!")
 		}
@@ -66,19 +59,35 @@ func DontTestGrammarRules(t *testing.T) {
 }
 
 func TestCommandGrammar(t *testing.T) {
-	fmt.Println("== Command Grammar Test")
 	Grammar := map[string]string{
 		"START":         `"show"  FeatureClause     Options  ToClause? `,
 		"ToClause":      `"to"  !string `,
 		"FeatureClause": `"feature"  !string? `,
 		"Options":       `TranClause | DefClause | ValueClause `,
 		"TranClause":    `"translation"  LangList? `,
-		"LangList":      `"lang"  !string? `,
+		"LangList":      `"lang"  !string `,
 		"ValueClause":   `"unique"?  "values" `,
 		"DefClause":     `"definition" `,
 	}
 
-	inputString := `show feature definition to "/tmp/test.csv" `
+	inputString := `show feature translation lang "xx,de,it" to "/tmp/test.csv" `
+	p := NewParser()
+	//p.SetOptions(OptionDebug)
+	p.SetCommandGrammar(Grammar)
+	p.SetInputString(inputString)
+	match := p.Parse()
+	Assert(t, match == true, "Should match input string, but does not!")
+
+}
+
+func TestExpressionGrammar(t *testing.T) {
+	Grammar := map[string]string{
+		"START":       ` "list" Item WhereClause?`,
+		"Item":        ` "card" | "board" | "list" `,
+		"WhereClause": ` "where" !expression `,
+	}
+
+	inputString := `list board where '4*(5+6) < 17' `
 	p := NewParser()
 	//p.SetOptions(OptionDebug)
 	p.SetCommandGrammar(Grammar)

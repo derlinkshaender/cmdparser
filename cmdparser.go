@@ -12,10 +12,11 @@ import (
 
 func NewParser() *CommandParser {
 	return &CommandParser{
-		options:   0,
-		inputLine: "",
-		grammar:   map[string]string{},
-		rules:     map[string]*RuleStruct{},
+		options:     0,
+		inputLine:   "",
+		grammar:     map[string]string{},
+		rules:       map[string]*RuleStruct{},
+		ParseResult: map[string]CmdToken{},
 	}
 }
 
@@ -92,6 +93,7 @@ func (theParser *CommandParser) TokenizeCommandLine() {
 				postTok.Value = nil
 				postTok.Type = TokenERR
 				haveError = true
+				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not convert to Integer."})
 			}
 			postTokens = append(postTokens, postTok)
 		case scanner.Float:
@@ -104,6 +106,7 @@ func (theParser *CommandParser) TokenizeCommandLine() {
 				postTok.Value = nil
 				postTok.Type = TokenERR
 				haveError = true
+				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not convert to Float."})
 			}
 			postTokens = append(postTokens, postTok)
 		case '\'':
@@ -125,6 +128,7 @@ func (theParser *CommandParser) TokenizeCommandLine() {
 				postTok.Value = nil
 				postTok.Type = TokenERR
 				haveError = true
+				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Char expression not enclosed on single quotes."})
 			}
 			postTokens = append(postTokens, postTok)
 		case scanner.String:
@@ -137,6 +141,7 @@ func (theParser *CommandParser) TokenizeCommandLine() {
 				postTok.Value = nil
 				postTok.Type = TokenERR
 				haveError = true
+				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not unquote string token."})
 			}
 			postTokens = append(postTokens, postTok)
 		default:
@@ -253,13 +258,18 @@ func (theParser *CommandParser) expressionCardinality(expr string) GrammarItemCa
 func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct {
 	items := []*RuleItem{}
 	list, typ := theParser.splitRule(expression)
+	rs := &RuleStruct{
+		Name:  name,
+		Items: items,
+		Type:  typ,
+	}
 	for _, li := range list {
 		item := &RuleItem{
 			Cardinality: theParser.expressionCardinality(li),
 			ExprType:    theParser.expressionType(li),
 			ExprString:  li,
-			ParseValue:  "",
-			ParseType:   scanner.EOF,
+			ParentRule:  rs,
+			Seen:        false,
 		}
 
 		if item.Cardinality != CardinalityOne {
@@ -269,13 +279,14 @@ func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct
 
 		switch item.ExprType {
 		case IdentifierExpr, CharExpr:
+			// remove quotes
 			item.ExprString = item.ExprString[1 : len(item.ExprString)-1]
 		case DataTypeExpr:
+			// remove exclamation mark
 			item.ExprString = item.ExprString[1:]
 		}
 
-		switch item.ExprType {
-		case CharExpr:
+		if item.ExprType == CharExpr {
 			s := utf8string.NewString(item.ExprString)
 			r := s.At(1)
 			if r == '\'' {
@@ -285,12 +296,7 @@ func (theParser *CommandParser) prepareRule(name, expression string) *RuleStruct
 			}
 		}
 
-		items = append(items, item)
-	}
-	rs := &RuleStruct{
-		Name:  name,
-		Items: items,
-		Type:  typ,
+		rs.Items = append(rs.Items, item)
 	}
 	return rs
 }
@@ -307,10 +313,6 @@ func matchClassExpr(theClass string, tokptr *CmdToken) bool {
 
 func matchDataTypeExpr(theDataType TokenType, tokptr *CmdToken) bool {
 	return tokptr.Type == theDataType
-}
-
-func matchEvaluatorExpr(theExpression string, tokptr *CmdToken) bool {
-	return tokptr.Type == TokenExpr
 }
 
 func getCardinality(ruleItemPtr *RuleItem) (minxOccur, maxOccur int) {
@@ -334,7 +336,13 @@ func getCardinality(ruleItemPtr *RuleItem) (minxOccur, maxOccur int) {
 }
 
 func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *CmdToken) bool {
-	var result bool = false
+	var isMatch bool = false
+	ruleItemPtr.Seen = true
+
+	if tokptr == nil {
+		return false
+	}
+
 	if theParser.options&OptionDebug != 0 {
 		fmt.Println("ruleItem:", ruleItemPtr.String())
 		if tokptr != nil {
@@ -345,18 +353,22 @@ func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *Cmd
 	}
 	switch ruleItemPtr.ExprType {
 	case CharExpr:
-		result = tokptr.Type == TokenChar && ruleItemPtr.ExprString == tokptr.Text
+		isMatch = tokptr.Type == TokenChar && ruleItemPtr.ExprString == tokptr.Text
 	case IdentifierExpr:
-		result = tokptr.Type == TokenIdent && ruleItemPtr.ExprString == tokptr.Value
+		isMatch = tokptr.Type == TokenIdent && ruleItemPtr.ExprString == tokptr.Value
 	case ClassExpr:
-		result = matchClassExpr(ruleItemPtr.ExprString, tokptr)
+		isMatch = matchClassExpr(ruleItemPtr.ExprString, tokptr)
 	case SymbolExpr:
-		theParser.unread(tokptr)
-		result = theParser.matchRule(theParser.rules[ruleItemPtr.ExprString])
+		if tokptr != nil {
+			theParser.unread(tokptr)
+		}
+		isMatch = theParser.matchRule(theParser.rules[ruleItemPtr.ExprString])
 	case DataTypeExpr:
 		dtStr := strings.ToLower(ruleItemPtr.ExprString)
 		var reqType TokenType
 		switch dtStr {
+		case "expression":
+			reqType = TokenExpr
 		case "string":
 			reqType = TokenString
 		case "int":
@@ -368,12 +380,20 @@ func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *Cmd
 		case "char":
 			reqType = TokenChar
 		}
-		result = matchDataTypeExpr(reqType, tokptr)
-	case EvaluatorExpr:
-		result = tokptr.Type == TokenExpr
+		isMatch = matchDataTypeExpr(reqType, tokptr)
 	}
 
-	return result
+	if isMatch {
+		ruleItemPtr.TokenPtr = tokptr
+	}
+
+	if !isMatch {
+		if !ruleItemPtr.Seen {
+			theParser.errorList = append(theParser.errorList, &ParseError{Column: theParser.tokptr.Position.Column, Message: "Rule " + ruleItemPtr.ParentRule.Name + ",  Expected " + ruleItemPtr.String()})
+		}
+	}
+
+	return isMatch
 }
 
 func (theParser *CommandParser) matchItemWithToken(ruleItemPtr *RuleItem) bool {
@@ -410,7 +430,9 @@ func (theParser *CommandParser) matchItemWithToken(ruleItemPtr *RuleItem) bool {
 			// match a Expr?
 			if minOccur == 0 || matchCount >= minOccur {
 				result = true
-				theParser.unread(theParser.tokptr)
+				if theParser.tokptr != nil {
+					theParser.unread(theParser.tokptr)
+				}
 				break
 			}
 			if matchCount < minOccur {
@@ -437,7 +459,7 @@ func (theParser *CommandParser) matchRule(rule *RuleStruct) bool {
 			}
 			match = theParser.matchItemWithToken(item)
 			if theParser.options&OptionDebug != 0 {
-				fmt.Println("      Result:", match)
+				fmt.Println(">>      Result:", match)
 			}
 			if !match {
 				break
@@ -476,6 +498,17 @@ func (theParser *CommandParser) AtEnd() bool {
 	return len(theParser.tokenList) == 0
 }
 
+func (theParser *CommandParser) buildParseResults() {
+	for _, rule := range theParser.rules {
+		for _, v := range rule.Items {
+			key := strings.ToLower(rule.Name + "_" + v.ExprString)
+			if v.TokenPtr != nil {
+				theParser.ParseResult[key] = *v.TokenPtr
+			}
+		}
+	}
+}
+
 func (theParser *CommandParser) Parse() bool {
 	rule := theParser.rules["START"]
 	match := theParser.matchRule(rule)
@@ -487,6 +520,7 @@ func (theParser *CommandParser) Parse() bool {
 		}
 		match = false
 	}
+	theParser.buildParseResults()
 	theParser.IsMatch = match
 	return match
 }
@@ -495,7 +529,7 @@ func (theParser *CommandParser) DumpRules() {
 	for _, rule := range theParser.rules {
 		fmt.Println(rule.Name)
 		for i, ri := range rule.Items {
-			fmt.Println("  ", i, ri.Seen, " >", ri.ParseType, ": ", ri.ParseValue)
+			fmt.Println("  ", i, ri.Seen, " >", ri.TokenPtr.String())
 		}
 	}
 }
