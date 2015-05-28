@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	Sequence = iota
-	Choice
+	Sequence = iota // all items of this sequence must match
+	Choice          // any one match of these items is sufficient
 )
 
 type GrammarItemType int

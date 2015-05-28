@@ -43,7 +43,7 @@ func (theParser *CommandParser) SetInputString(inputLine string) {
 
 func (theParser *CommandParser) golangTokenizer(line string) []*PreToken {
 	var theScanner scanner.Scanner
-	var result []*PreToken = []*PreToken{}
+	result := []*PreToken{}
 	theScanner.Init(strings.NewReader(line))
 	theScanner.Mode = scanner.ScanFloats | scanner.ScanIdents | scanner.ScanInts | scanner.ScanStrings
 	tok := theScanner.Scan()
@@ -61,9 +61,9 @@ func (theParser *CommandParser) golangTokenizer(line string) []*PreToken {
 }
 
 func (theParser *CommandParser) TokenizeCommandLine() {
-	var preTokens []*PreToken = theParser.golangTokenizer(theParser.inputLine)
-	var postTokens []*CmdToken = []*CmdToken{}
-	var haveError bool = false
+	preTokens := theParser.golangTokenizer(theParser.inputLine)
+	postTokens := []*CmdToken{}
+	haveError := false
 	index := 0
 	for {
 		tok := preTokens[index]
@@ -175,13 +175,13 @@ func (theParser *CommandParser) dump() {
 
 // copy a token struct
 func copyToken(tok *CmdToken) *CmdToken {
-	var result CmdToken = *tok
+	result := *tok
 	return &result
 }
 
 // peek a token without advancing the input token list
 func (theParser *CommandParser) peek() *CmdToken {
-	var result *CmdToken = nil
+	var result *CmdToken
 	if len(theParser.tokenList) > 0 {
 		result = copyToken(theParser.tokenList[0])
 	}
@@ -190,7 +190,7 @@ func (theParser *CommandParser) peek() *CmdToken {
 
 // consume a token from the input token list
 func (theParser *CommandParser) read() *CmdToken {
-	var result *CmdToken = nil
+	var result *CmdToken
 	if len(theParser.tokenList) > 0 {
 		result = theParser.tokenList[0]
 		theParser.tokenList = append([]*CmdToken{}, theParser.tokenList[1:]...)
@@ -207,7 +207,7 @@ func (theParser *CommandParser) unread(tok *CmdToken) {
 
 func (theParser *CommandParser) splitRule(ruleString string) ([]string, GrammarItemType) {
 	var temp []string
-	var result []string = []string{}
+	result := []string{}
 	var resultType GrammarItemType
 
 	if strings.Index(ruleString, CHOICESTRING) > 0 {
@@ -218,7 +218,7 @@ func (theParser *CommandParser) splitRule(ruleString string) ([]string, GrammarI
 		temp = strings.Split(ruleString, " ")
 	}
 
-	for i, _ := range temp {
+	for i := range temp {
 		if strings.TrimSpace(temp[i]) != "" {
 			result = append(result, strings.TrimSpace(temp[i]))
 		}
@@ -336,7 +336,7 @@ func getCardinality(ruleItemPtr *RuleItem) (minxOccur, maxOccur int) {
 }
 
 func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *CmdToken) bool {
-	var isMatch bool = false
+	isMatch := false
 	ruleItemPtr.Seen = true
 
 	if theParser.options&OptionDebug != 0 {
@@ -398,8 +398,8 @@ func (theParser *CommandParser) matchRuleItem(ruleItemPtr *RuleItem, tokptr *Cmd
 }
 
 func (theParser *CommandParser) matchItemWithToken(ruleItemPtr *RuleItem) bool {
-	var result bool = false
-	var matchCount int = 0
+	result := false
+	var matchCount int
 	minOccur, maxOccur := getCardinality(ruleItemPtr)
 
 	for {
@@ -449,7 +449,7 @@ func (theParser *CommandParser) matchRule(rule *RuleStruct) bool {
 	if theParser.options&OptionDebug != 0 {
 		fmt.Println("Trying to match ", rule.Name)
 	}
-	var match bool = false
+	match := false
 
 	if rule.Type == Sequence {
 		// all must match
@@ -495,6 +495,9 @@ func (theParser *CommandParser) matchRule(rule *RuleStruct) bool {
 	return match
 }
 
+/*
+  detect if the parser has processed the input stream to the end
+*/
 func (theParser *CommandParser) AtEnd() bool {
 	return len(theParser.tokenList) == 0
 }
@@ -510,6 +513,9 @@ func (theParser *CommandParser) buildParseResults() {
 	}
 }
 
+/*
+  Parse() ist the function you call to start the parsing process.
+*/
 func (theParser *CommandParser) Parse() bool {
 	rule := theParser.rules["START"]
 	match := theParser.matchRule(rule)
@@ -526,6 +532,9 @@ func (theParser *CommandParser) Parse() bool {
 	return match
 }
 
+/*
+  Convenience function to dump a rule set
+*/
 func (theParser *CommandParser) DumpRules() {
 	for _, rule := range theParser.rules {
 		fmt.Println(rule.Name)
