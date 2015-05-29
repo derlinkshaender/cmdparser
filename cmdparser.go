@@ -1,6 +1,7 @@
 package cmdparser
 
 import (
+	"errors"
 	"fmt"
 	"golang.org/x/exp/utf8string"
 	"regexp"
@@ -60,98 +61,167 @@ func (theParser *CommandParser) golangTokenizer(line string) []*PreToken {
 	return result
 }
 
+func tokenFromIdentifier(preToken *PreToken) (*CmdToken, error) {
+	low := strings.ToLower(preToken.Text)
+	token := &CmdToken{
+		Position: preToken.Position,
+	}
+	var err error
+	// process booleans
+	if low == "true" || low == "yes" || low == "false" || low == "no" {
+		token.Text = low
+		token.Type = TokenBool
+		token.Value = (low == "yes" || low == "true")
+	} else {
+		token.Text = preToken.Text
+		token.Type = TokenIdent
+		token.Value = preToken.Text
+	}
+	return token, err
+}
+
+func tokenFromInt(preToken *PreToken) (*CmdToken, error) {
+	var err error
+	token := &CmdToken{
+		Text:     preToken.Text,
+		Type:     TokenInt,
+		Position: preToken.Position,
+	}
+	val, err := strconv.Atoi(preToken.Text)
+	if err == nil {
+		token.Value = val
+	} else {
+		token.Value = nil
+		token.Type = TokenERR
+		err = errors.New("NOT_AN_INT")
+	}
+	return token, err
+}
+
+func tokenFromFloat(preToken *PreToken) (*CmdToken, error) {
+	var err error
+	token := &CmdToken{
+		Text:     preToken.Text,
+		Type:     TokenFloat,
+		Position: preToken.Position,
+	}
+	val, err := strconv.ParseFloat(preToken.Text, 64)
+	if err == nil {
+		token.Value = val
+	} else {
+		token.Value = nil
+		token.Type = TokenERR
+		err = errors.New("NOT_A_FLOAT")
+	}
+	return token, err
+}
+
+func tokenFromString(preToken *PreToken) (*CmdToken, error) {
+	var err error
+	token := &CmdToken{
+		Text:     preToken.Text,
+		Type:     TokenString,
+		Position: preToken.Position,
+	}
+	val, err := strconv.Unquote(preToken.Text)
+	if err == nil {
+		token.Value = val
+	} else {
+		token.Value = nil
+		token.Type = TokenERR
+		err = errors.New("COULD_NOT_UNQUOTE")
+	}
+	return token, err
+}
+
+func tokenFromChar(preToken *PreToken) (*CmdToken, error) {
+	var err error
+	token := &CmdToken{
+		Text:     preToken.Text,
+		Type:     TokenChar,
+		Position: preToken.Position,
+	}
+	r, _ := utf8.DecodeRuneInString(preToken.Text)
+	token.Value = r
+	return token, err
+}
+
+// watch out, different signature from the rest, because we must combine more than
+// one pretoken to form the expression string
+func tokenFromExpression(preTokens []*PreToken, startIndex int) (*CmdToken, int, error) {
+	var err error
+	currIndex := startIndex
+	token := &CmdToken{
+		Text:     "",
+		Type:     TokenExpr,
+		Position: preTokens[currIndex].Position,
+	}
+	if preTokens[currIndex].Text == "'" {
+		tmpStr := ""
+		for {
+			currIndex++
+			// are we done with the expression?
+			if currIndex >= len(preTokens) || preTokens[currIndex].Type == '\'' {
+				break
+			}
+			tmpStr += preTokens[currIndex].Text
+		}
+		token.Text = tmpStr
+		token.Type = TokenExpr
+		token.Value = preTokens[startIndex:currIndex]
+	} else {
+		token.Value = nil
+		token.Type = TokenERR
+		err = errors.New("MISSING_SINGLE_QUOTE")
+	}
+	return token, currIndex, err
+}
+
+/*
+  tokenize the commandline into CmdParser tokens. to make things easier, we first
+  use the internal scanner from GO, then post-process the tokens from the scanner.
+*/
 func (theParser *CommandParser) TokenizeCommandLine() {
 	preTokens := theParser.golangTokenizer(theParser.inputLine)
 	postTokens := []*CmdToken{}
-	haveError := false
+	var err error
+	var postTok *CmdToken
 	index := 0
 	for {
 		tok := preTokens[index]
-		postTok := &CmdToken{}
-		postTok.Position = tok.Position
 		switch tok.Type {
 		case scanner.Ident:
-			low := strings.ToLower(tok.Text)
-			// process booleans
-			if low == "true" || low == "yes" || low == "false" || low == "no" {
-				postTok.Text = low
-				postTok.Type = TokenBool
-				postTok.Value = (low == "yes" || low == "true")
-			} else {
-				postTok.Text = tok.Text
-				postTok.Type = TokenIdent
-				postTok.Value = tok.Text
+			postTok, err = tokenFromIdentifier(tok)
+			if err == nil {
+				postTokens = append(postTokens, postTok)
 			}
-			postTokens = append(postTokens, postTok)
 		case scanner.Int:
-			postTok.Text = tok.Text
-			postTok.Type = TokenInt
-			val, err := strconv.Atoi(tok.Text)
+			postTok, err = tokenFromInt(tok)
 			if err == nil {
-				postTok.Value = val
-			} else {
-				postTok.Value = nil
-				postTok.Type = TokenERR
-				haveError = true
-				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not convert to Integer."})
+				postTokens = append(postTokens, postTok)
 			}
-			postTokens = append(postTokens, postTok)
 		case scanner.Float:
-			postTok.Text = tok.Text
-			postTok.Type = TokenFloat
-			val, err := strconv.ParseFloat(tok.Text, 64)
+			postTok, err = tokenFromFloat(tok)
 			if err == nil {
-				postTok.Value = val
-			} else {
-				postTok.Value = nil
-				postTok.Type = TokenERR
-				haveError = true
-				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not convert to Float."})
+				postTokens = append(postTokens, postTok)
 			}
-			postTokens = append(postTokens, postTok)
-		case '\'':
-			if tok.Text == "'" {
-				tmpStr := ""
-				startIndex := index
-				for {
-					index++
-					if index >= len(preTokens) || preTokens[index].Type == '\'' {
-						break
-					}
-					tok = preTokens[index]
-					tmpStr += tok.Text
-				}
-				postTok.Text = tmpStr
-				postTok.Type = TokenExpr
-				postTok.Value = preTokens[startIndex:index]
-			} else {
-				postTok.Value = nil
-				postTok.Type = TokenERR
-				haveError = true
-				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Char expression not enclosed on single quotes."})
-			}
-			postTokens = append(postTokens, postTok)
 		case scanner.String:
-			postTok.Text = preTokens[index].Text
-			postTok.Type = TokenString
-			val, err := strconv.Unquote(preTokens[index].Text)
+			postTok, err = tokenFromString(tok)
 			if err == nil {
-				postTok.Value = val
-			} else {
-				postTok.Value = nil
-				postTok.Type = TokenERR
-				haveError = true
-				theParser.errorList = append(theParser.errorList, &ParseError{Column: tok.Position.Column, Message: "Could not unquote string token."})
+				postTokens = append(postTokens, postTok)
 			}
-			postTokens = append(postTokens, postTok)
+		case '\'':
+			postTok, index, err = tokenFromExpression(preTokens, index)
+			if err == nil {
+				postTokens = append(postTokens, postTok)
+			}
 		default:
-			postTok.Type = TokenChar
-			postTok.Text = preTokens[index].Text
-			r, _ := utf8.DecodeRuneInString(preTokens[index].Text)
-			postTok.Value = r
-			postTokens = append(postTokens, postTok)
+			postTok, err = tokenFromChar(tok)
+			if err == nil {
+				postTokens = append(postTokens, postTok)
+			}
 		}
-		if haveError {
+		if err != nil {
 			postTokens = nil
 			theParser.TokenizerError = true
 		} else {
@@ -165,6 +235,7 @@ func (theParser *CommandParser) TokenizeCommandLine() {
 	theParser.tokenList = postTokens
 }
 
+// convenience function to dump the token list of the parser
 func (theParser *CommandParser) dump() {
 	for i, v := range theParser.tokenList {
 		fmt.Printf("%2d: ", i)
