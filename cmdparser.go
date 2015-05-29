@@ -181,10 +181,8 @@ func tokenFromExpression(preTokens []*PreToken, startIndex int) (*CmdToken, int,
 	return token, currIndex, err
 }
 
-/*
-  TokenizeCommandLine creates the list of CmdParser tokens. to make things easier, we first
-  use the internal scanner from GO, then post-process the tokens from the scanner.
-*/
+// TokenizeCommandLine creates the list of CmdParser tokens. to make things easier
+// we first use the internal scanner from GO, then post-process the tokens from the scanner.
 func (theParser *CommandParser) TokenizeCommandLine() {
 	preTokens := theParser.golangTokenizer(theParser.inputLine)
 	postTokens := []*CmdToken{}
@@ -570,9 +568,7 @@ func (theParser *CommandParser) matchRule(rule *RuleStruct) bool {
 	return match
 }
 
-/*
-  AtEnd detects if the parser has processed the input stream to the end
-*/
+// AtEnd detects if the parser has processed the input stream to the end
 func (theParser *CommandParser) AtEnd() bool {
 	return len(theParser.tokenList) == 0
 }
@@ -588,9 +584,7 @@ func (theParser *CommandParser) buildParseResults() {
 	}
 }
 
-/*
-  Parse is the function you call to start the parsing process.
-*/
+// Parse is the function you call to start the parsing process.
 func (theParser *CommandParser) Parse() bool {
 	rule := theParser.rules["START"]
 	match := theParser.matchRule(rule)
@@ -607,9 +601,7 @@ func (theParser *CommandParser) Parse() bool {
 	return match
 }
 
-/*
-  DumpRules is a convenience function to dump a rule set
-*/
+// DumpRules is a convenience function to dump a rule set
 func (theParser *CommandParser) DumpRules() {
 	for _, rule := range theParser.rules {
 		fmt.Println(rule.Name)
